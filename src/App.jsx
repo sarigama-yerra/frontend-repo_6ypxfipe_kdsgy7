@@ -5,15 +5,26 @@ function useGoogleMaps(apiKey) {
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
+    // If already loaded, nothing to do
     if (window.google && window.google.maps) {
       setLoaded(true)
       return
     }
+
+    if (!apiKey) return
+
     const existing = document.getElementById('google-maps')
     if (existing) {
-      existing.addEventListener('load', () => setLoaded(true))
-      return
+      const src = existing.getAttribute('src') || ''
+      // If the existing script does not include this apiKey, replace it
+      if (!src.includes(apiKey)) {
+        existing.remove()
+      } else {
+        existing.addEventListener('load', () => setLoaded(true))
+        return
+      }
     }
+
     const script = document.createElement('script')
     script.id = 'google-maps'
     script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`
@@ -26,21 +37,49 @@ function useGoogleMaps(apiKey) {
   return loaded
 }
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || ''
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+// Resolve settings from env, URL params, or localStorage so you can use the app without editing code
+function useSettings() {
+  const params = new URLSearchParams(window.location.search)
+  const initialApiKey = (
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
+    localStorage.getItem('gmaps_api_key') ||
+    params.get('gmaps_key') ||
+    ''
+  )
+  const initialBackend = (
+    import.meta.env.VITE_BACKEND_URL ||
+    localStorage.getItem('backend_url') ||
+    ''
+  )
+  const [apiKey, setApiKey] = useState(initialApiKey)
+  const [backendUrl, setBackendUrl] = useState(initialBackend)
+
+  // Persist changes
+  useEffect(() => {
+    if (apiKey) localStorage.setItem('gmaps_api_key', apiKey)
+  }, [apiKey])
+  useEffect(() => {
+    if (backendUrl) localStorage.setItem('backend_url', backendUrl)
+  }, [backendUrl])
+
+  return { apiKey, setApiKey, backendUrl, setBackendUrl }
+}
 
 function App() {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const drawingLayer = useRef(null)
 
+  const { apiKey, setApiKey, backendUrl, setBackendUrl } = useSettings()
+
   const [level, setLevel] = useState('state') // state | county
   const [selectedItems, setSelectedItems] = useState([])
   const [name, setName] = useState('My Selection')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState([])
+  const [showSettings, setShowSettings] = useState(false)
 
-  const mapsLoaded = useGoogleMaps(GOOGLE_MAPS_API_KEY)
+  const mapsLoaded = useGoogleMaps(apiKey)
 
   useEffect(() => {
     if (!mapsLoaded || !mapRef.current || mapInstance.current) return
@@ -84,14 +123,14 @@ function App() {
     if (!name.trim()) return
     setSaving(true)
     try {
-      const res = await fetch(`${BACKEND_URL}/api/selections`, {
+      const res = await fetch(`${backendUrl}/api/selections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, level, items: selectedItems })
       })
       const data = await res.json()
       if (res.ok) {
-        const listRes = await fetch(`${BACKEND_URL}/api/selections`)
+        const listRes = await fetch(`${backendUrl}/api/selections`)
         const list = await listRes.json()
         setSaved(list)
       } else {
@@ -110,13 +149,14 @@ function App() {
     // Initial load of saved selections
     async function loadSaved() {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/selections`)
+        if (!backendUrl) return
+        const res = await fetch(`${backendUrl}/api/selections`)
         const data = await res.json()
         if (Array.isArray(data)) setSaved(data)
       } catch {}
     }
     loadSaved()
-  }, [])
+  }, [backendUrl])
 
   // Basic visual feedback on map by dropping markers colored by level
   useEffect(() => {
@@ -162,14 +202,34 @@ function App() {
           <span className="text-xs text-gray-500">Select US states or counties and save/export</span>
         </div>
         <div className="flex items-center gap-2">
+          <button className="text-sm text-gray-600 underline" onClick={() => setShowSettings(s => !s)}>
+            {showSettings ? 'Hide settings' : 'Settings'}
+          </button>
           <select value={level} onChange={e => { setLevel(e.target.value); setSelectedItems([]) }} className="border rounded px-2 py-1">
             <option value="state">States</option>
             <option value="county">Counties</option>
           </select>
           <input value={name} onChange={e => setName(e.target.value)} className="border rounded px-2 py-1" placeholder="Selection name" />
-          <button onClick={saveSelection} disabled={saving || !selectedItems.length} className="bg-blue-600 text-white px-3 py-1 rounded disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+          <button onClick={saveSelection} disabled={saving || !selectedItems.length || !backendUrl} className="bg-blue-600 text-white px-3 py-1 rounded disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
         </div>
       </header>
+
+      {showSettings && (
+        <div className="border-b bg-gray-50 px-4 py-3 grid gap-3 md:grid-cols-2">
+          <div className="flex items-center gap-2">
+            <label className="w-40 text-sm text-gray-700">Google Maps API key</label>
+            <input className="flex-1 border rounded px-2 py-1" placeholder="Paste your key" value={apiKey} onChange={e => setApiKey(e.target.value.trim())} />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="w-40 text-sm text-gray-700">Backend URL</label>
+            <input className="flex-1 border rounded px-2 py-1" placeholder="https://your-backend" value={backendUrl} onChange={e => setBackendUrl(e.target.value.trim())} />
+          </div>
+          <div className="md:col-span-2 text-xs text-gray-500">
+            Tips: You can also supply these via URL params: ?gmaps_key=YOUR_KEY&backend=https://your-backend. Values are saved in your browser.
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-[320px,1fr]">
         <aside className="p-4 border-r space-y-4 bg-white">
           <div>
@@ -199,13 +259,18 @@ function App() {
 
           <div>
             <div className="text-sm font-medium mb-2">Saved selections</div>
+            {!backendUrl && (
+              <div className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 p-2 rounded mb-2">
+                Set your backend URL in Settings to enable save and export.
+              </div>
+            )}
             <div className="space-y-2">
               {saved.map(s => (
                 <div key={s.id} className="border rounded p-2">
                   <div className="text-sm font-medium">{s.name}</div>
                   <div className="text-xs text-gray-500">{s.level} • {s.items?.length || 0} items</div>
                   <div className="flex gap-2 mt-2">
-                    <a className="text-blue-600 text-xs hover:underline" href={`${BACKEND_URL}/api/selections/${s.id}/export.csv`} target="_blank" rel="noreferrer">Export CSV</a>
+                    <a className="text-blue-600 text-xs hover:underline" href={`${backendUrl}/api/selections/${s.id}/export.csv`} target="_blank" rel="noreferrer">Export CSV</a>
                   </div>
                 </div>
               ))}
@@ -213,9 +278,9 @@ function App() {
           </div>
         </aside>
         <main className="relative">
-          {!GOOGLE_MAPS_API_KEY && (
+          {!apiKey && (
             <div className="absolute inset-0 z-10 bg-yellow-50 border-b border-yellow-200 p-3 text-sm text-yellow-900">
-              Add VITE_GOOGLE_MAPS_API_KEY in environment to enable map rendering.
+              Add a Google Maps API key in Settings or via URL param gmaps_key to enable map rendering.
             </div>
           )}
           <div ref={mapRef} className="w-full h-[70vh] md:h-full" />
