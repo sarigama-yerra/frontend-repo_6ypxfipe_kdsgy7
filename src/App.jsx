@@ -65,6 +65,21 @@ function useSettings() {
   return { apiKey, setApiKey, backendUrl, setBackendUrl }
 }
 
+const STATE_NAME_TO_POSTAL = {
+  Alabama: 'AL', Alaska: 'AK', Arizona: 'AZ', Arkansas: 'AR', California: 'CA', Colorado: 'CO',
+  Connecticut: 'CT', Delaware: 'DE', Florida: 'FL', Georgia: 'GA', Hawaii: 'HI', Idaho: 'ID',
+  Illinois: 'IL', Indiana: 'IN', Iowa: 'IA', Kansas: 'KS', Kentucky: 'KY', Louisiana: 'LA',
+  Maine: 'ME', Maryland: 'MD', Massachusetts: 'MA', Michigan: 'MI', Minnesota: 'MN',
+  Mississippi: 'MS', Missouri: 'MO', Montana: 'MT', Nebraska: 'NE', Nevada: 'NV',
+  'New Hampshire': 'NH', 'New Jersey': 'NJ', 'New Mexico': 'NM', 'New York': 'NY',
+  'North Carolina': 'NC', 'North Dakota': 'ND', Ohio: 'OH', Oklahoma: 'OK', Oregon: 'OR',
+  Pennsylvania: 'PA', 'Rhode Island': 'RI', 'South Carolina': 'SC', 'South Dakota': 'SD',
+  Tennessee: 'TN', Texas: 'TX', Utah: 'UT', Vermont: 'VT', Virginia: 'VA', Washington: 'WA',
+  'West Virginia': 'WV', Wisconsin: 'WI', Wyoming: 'WY',
+  // DC and territories (optional in this GeoJSON)
+  'District of Columbia': 'DC'
+}
+
 function App() {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
@@ -191,11 +206,17 @@ function App() {
     async function ensureGeoJsonLoaded() {
       if (geojsonLoadedRef.current) return
       try {
-        // Public domain US states GeoJSON with postal codes
+        // Public domain US states GeoJSON with names
         const url = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json'
         const res = await fetch(url)
         const gj = await res.json()
         mapInstance.current.data.addGeoJson(gj)
+        // Assign postal property based on state name for easy use later
+        mapInstance.current.data.forEach((feature) => {
+          const name = feature.getProperty('name')
+          const postal = STATE_NAME_TO_POSTAL[name]
+          if (postal) feature.setProperty('postal', postal)
+        })
         geojsonLoadedRef.current = true
       } catch (e) {
         console.error('Failed to load state polygons', e)
@@ -207,8 +228,8 @@ function App() {
     ensureGeoJsonLoaded().then(() => {
       // Style based on selection
       mapInstance.current.data.setStyle((feature) => {
-        const code = feature.getProperty('postal') || feature.getProperty('abbr') || feature.getProperty('state_code')
-        const selected = selectedItems.includes(code)
+        const code = feature.getProperty('postal') || STATE_NAME_TO_POSTAL[feature.getProperty('name')] || null
+        const selected = code ? selectedItems.includes(code) : false
         return {
           fillColor: selected ? '#3b82f6' : '#93c5fd',
           fillOpacity: selected ? 0.55 : 0.15,
@@ -219,7 +240,8 @@ function App() {
 
       // Clicking directly on a state polygon toggles it
       dataClickListenerRef.current = mapInstance.current.data.addListener('click', (e) => {
-        const code = e.feature.getProperty('postal') || e.feature.getProperty('abbr') || e.feature.getProperty('state_code')
+        const name = e.feature.getProperty('name')
+        const code = e.feature.getProperty('postal') || STATE_NAME_TO_POSTAL[name]
         if (code) {
           toggleItem(code)
           setHint(`Toggled state ${code}`)
