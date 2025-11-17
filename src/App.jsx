@@ -70,6 +70,8 @@ function App() {
   const mapInstance = useRef(null)
   const drawingLayer = useRef(null)
   const clickListenerRef = useRef(null)
+  const dataClickListenerRef = useRef(null)
+  const geojsonLoadedRef = useRef(false)
 
   const { apiKey, setApiKey, backendUrl, setBackendUrl } = useSettings()
 
@@ -169,7 +171,65 @@ function App() {
     loadSaved()
   }, [backendUrl])
 
-  // Clicking on the map selects based on reverse geocoding
+  // Load and render US state polygons via GeoJSON in Data Layer when level === 'state'
+  useEffect(() => {
+    if (!mapsLoaded || !mapInstance.current) return
+
+    // Clear previous data and listeners when switching levels
+    mapInstance.current.data.setStyle(null)
+    mapInstance.current.data.forEach(f => mapInstance.current.data.remove(f))
+    if (dataClickListenerRef.current) {
+      window.google.maps.event.removeListener(dataClickListenerRef.current)
+      dataClickListenerRef.current = null
+    }
+
+    if (level !== 'state') {
+      geojsonLoadedRef.current = false
+      return
+    }
+
+    async function ensureGeoJsonLoaded() {
+      if (geojsonLoadedRef.current) return
+      try {
+        // Public domain US states GeoJSON with postal codes
+        const url = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json'
+        const res = await fetch(url)
+        const gj = await res.json()
+        mapInstance.current.data.addGeoJson(gj)
+        geojsonLoadedRef.current = true
+      } catch (e) {
+        console.error('Failed to load state polygons', e)
+        setHint('Could not load state polygons. Check your network and try again.')
+        setTimeout(() => setHint(''), 3000)
+      }
+    }
+
+    ensureGeoJsonLoaded().then(() => {
+      // Style based on selection
+      mapInstance.current.data.setStyle((feature) => {
+        const code = feature.getProperty('postal') || feature.getProperty('abbr') || feature.getProperty('state_code')
+        const selected = selectedItems.includes(code)
+        return {
+          fillColor: selected ? '#3b82f6' : '#93c5fd',
+          fillOpacity: selected ? 0.55 : 0.15,
+          strokeColor: selected ? '#1d4ed8' : '#2563eb',
+          strokeWeight: selected ? 2 : 1
+        }
+      })
+
+      // Clicking directly on a state polygon toggles it
+      dataClickListenerRef.current = mapInstance.current.data.addListener('click', (e) => {
+        const code = e.feature.getProperty('postal') || e.feature.getProperty('abbr') || e.feature.getProperty('state_code')
+        if (code) {
+          toggleItem(code)
+          setHint(`Toggled state ${code}`)
+          setTimeout(() => setHint(''), 2000)
+        }
+      })
+    })
+  }, [mapsLoaded, level, selectedItems])
+
+  // Clicking on the base map (non-polygon areas) selects based on reverse geocoding (for states)
   useEffect(() => {
     if (!mapsLoaded || !mapInstance.current) return
 
@@ -190,9 +250,7 @@ function App() {
       const countyComp = components.find(c => c.types.includes('administrative_area_level_2'))
       const stateComp = components.find(c => c.types.includes('administrative_area_level_1'))
       if (!countyComp || !stateComp) return null
-      // Normalize names (Google often returns "Los Angeles County")
       let countyName = countyComp.long_name
-      // Some counties include the word "County" already; ensure it exists for mapping keys
       if (!/County$/i.test(countyName) && !/Parish$/i.test(countyName) && !/Borough$/i.test(countyName)) {
         countyName = countyName + ' County'
       }
@@ -202,10 +260,12 @@ function App() {
 
     clickListenerRef.current = mapInstance.current.addListener('click', (e) => {
       const latLng = e.latLng
+      // If user clicks a polygon, Data layer handles it. This is for base map clicks.
+      const geocodeFor = level === 'state' ? 'state' : 'county'
       geocoder.geocode({ location: latLng }, (results, status) => {
         if (status !== 'OK' || !results || !results[0]) return
         const components = results[0].address_components || []
-        if (level === 'state') {
+        if (geocodeFor === 'state') {
           const code = extractStateCode(components)
           if (code) {
             toggleItem(code)
@@ -223,7 +283,6 @@ function App() {
             setHint('Clicked county not in demo list. We will add full US counties soon.')
           }
         }
-        // Clear hint after a moment
         setTimeout(() => setHint(''), 2500)
       })
     })
@@ -235,10 +294,20 @@ function App() {
     }
   }, [mapsLoaded, level, countyNameToFips])
 
-  // Basic visual feedback on map by dropping markers colored by level
+  // Basic visual feedback for counties using markers (until full county polygons are added)
   useEffect(() => {
     if (!mapsLoaded || !mapInstance.current) return
-    // Clear old markers if any
+
+    // For states, Data layer handles polygons. Clear marker layer.
+    if (level === 'state') {
+      if (drawingLayer.current) {
+        drawingLayer.current.forEach(m => m.setMap(null))
+      }
+      drawingLayer.current = []
+      return
+    }
+
+    // Counties demo with markers
     if (drawingLayer.current) {
       drawingLayer.current.forEach(m => m.setMap(null))
     }
@@ -248,7 +317,7 @@ function App() {
 
     const items = selectedItems.slice(0, 12) // cap to avoid quota
     items.forEach((code) => {
-      const query = level === 'state' ? `${code} state, USA` : `county ${code} USA`
+      const query = `FIPS ${code} county USA`
       geocoder.geocode({ address: query }, (results, status) => {
         if (status === 'OK' && results && results[0]) {
           const loc = results[0].geometry.location
@@ -259,7 +328,7 @@ function App() {
             icon: {
               path: window.google.maps.SymbolPath.CIRCLE,
               scale: 8,
-              fillColor: level === 'state' ? '#3b82f6' : '#f59e0b',
+              fillColor: '#f59e0b',
               fillOpacity: 0.9,
               strokeWeight: 1,
               strokeColor: '#111827'
@@ -311,7 +380,7 @@ function App() {
         <aside className="p-4 border-r space-y-4 bg-white">
           <div>
             <div className="text-sm font-medium mb-2">Choose {level === 'state' ? 'states' : 'counties'}</div>
-            <div className="text-xs text-gray-500 mb-2">Tip: You can now click directly on the map to toggle a {level === 'state' ? 'state' : 'county'}.</div>
+            <div className="text-xs text-gray-500 mb-2">Tip: Click directly on the map to toggle a {level === 'state' ? 'state' : 'county'}.</div>
             <div className="max-h-64 overflow-auto space-y-1 pr-1">
               {(level === 'state' ? stateOptions : countyOptions).map(opt => (
                 <label key={opt.code} className="flex items-center gap-2 text-sm">
