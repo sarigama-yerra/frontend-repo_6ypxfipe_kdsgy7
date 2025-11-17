@@ -69,6 +69,7 @@ function App() {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const drawingLayer = useRef(null)
+  const clickListenerRef = useRef(null)
 
   const { apiKey, setApiKey, backendUrl, setBackendUrl } = useSettings()
 
@@ -78,6 +79,7 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState([])
   const [showSettings, setShowSettings] = useState(false)
+  const [hint, setHint] = useState('')
 
   const mapsLoaded = useGoogleMaps(apiKey)
 
@@ -119,6 +121,15 @@ function App() {
     { code: '53033', name: 'King County, WA' },
   ], [])
 
+  // Map of county name+state to FIPS for demo counties
+  const countyNameToFips = useMemo(() => ({
+    'San Francisco County, CA': '06075',
+    'Los Angeles County, CA': '06037',
+    'New York County, NY': '36061',
+    'Miami-Dade County, FL': '12086',
+    'King County, WA': '53033',
+  }), [])
+
   async function saveSelection() {
     if (!name.trim()) return
     setSaving(true)
@@ -157,6 +168,72 @@ function App() {
     }
     loadSaved()
   }, [backendUrl])
+
+  // Clicking on the map selects based on reverse geocoding
+  useEffect(() => {
+    if (!mapsLoaded || !mapInstance.current) return
+
+    // Cleanup previous listener
+    if (clickListenerRef.current) {
+      window.google.maps.event.removeListener(clickListenerRef.current)
+      clickListenerRef.current = null
+    }
+
+    const geocoder = new window.google.maps.Geocoder()
+
+    function extractStateCode(components) {
+      const stateComp = components.find(c => c.types.includes('administrative_area_level_1'))
+      return stateComp?.short_name || null
+    }
+
+    function extractCountyLabel(components) {
+      const countyComp = components.find(c => c.types.includes('administrative_area_level_2'))
+      const stateComp = components.find(c => c.types.includes('administrative_area_level_1'))
+      if (!countyComp || !stateComp) return null
+      // Normalize names (Google often returns "Los Angeles County")
+      let countyName = countyComp.long_name
+      // Some counties include the word "County" already; ensure it exists for mapping keys
+      if (!/County$/i.test(countyName) && !/Parish$/i.test(countyName) && !/Borough$/i.test(countyName)) {
+        countyName = countyName + ' County'
+      }
+      const label = `${countyName}, ${stateComp.short_name}`
+      return label
+    }
+
+    clickListenerRef.current = mapInstance.current.addListener('click', (e) => {
+      const latLng = e.latLng
+      geocoder.geocode({ location: latLng }, (results, status) => {
+        if (status !== 'OK' || !results || !results[0]) return
+        const components = results[0].address_components || []
+        if (level === 'state') {
+          const code = extractStateCode(components)
+          if (code) {
+            toggleItem(code)
+            setHint(`Toggled state ${code}`)
+          } else {
+            setHint('Could not determine state here')
+          }
+        } else {
+          const label = extractCountyLabel(components)
+          if (label && countyNameToFips[label]) {
+            const fips = countyNameToFips[label]
+            toggleItem(fips)
+            setHint(`Toggled ${label}`)
+          } else {
+            setHint('Clicked county not in demo list. We will add full US counties soon.')
+          }
+        }
+        // Clear hint after a moment
+        setTimeout(() => setHint(''), 2500)
+      })
+    })
+
+    return () => {
+      if (clickListenerRef.current) {
+        window.google.maps.event.removeListener(clickListenerRef.current)
+      }
+    }
+  }, [mapsLoaded, level, countyNameToFips])
 
   // Basic visual feedback on map by dropping markers colored by level
   useEffect(() => {
@@ -234,6 +311,7 @@ function App() {
         <aside className="p-4 border-r space-y-4 bg-white">
           <div>
             <div className="text-sm font-medium mb-2">Choose {level === 'state' ? 'states' : 'counties'}</div>
+            <div className="text-xs text-gray-500 mb-2">Tip: You can now click directly on the map to toggle a {level === 'state' ? 'state' : 'county'}.</div>
             <div className="max-h-64 overflow-auto space-y-1 pr-1">
               {(level === 'state' ? stateOptions : countyOptions).map(opt => (
                 <label key={opt.code} className="flex items-center gap-2 text-sm">
@@ -281,6 +359,11 @@ function App() {
           {!apiKey && (
             <div className="absolute inset-0 z-10 bg-yellow-50 border-b border-yellow-200 p-3 text-sm text-yellow-900">
               Add a Google Maps API key in Settings or via URL param gmaps_key to enable map rendering.
+            </div>
+          )}
+          {hint && (
+            <div className="absolute top-2 left-2 z-20 bg-white/90 border rounded px-2 py-1 text-xs text-gray-700 shadow">
+              {hint}
             </div>
           )}
           <div ref={mapRef} className="w-full h-[70vh] md:h-full" />
